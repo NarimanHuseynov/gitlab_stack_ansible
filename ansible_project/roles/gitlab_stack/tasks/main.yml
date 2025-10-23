@@ -79,7 +79,7 @@
     docker run -d --name gitlab-runner --restart always \
       -v /root/gitlab-runner-config:/etc/gitlab-runner \
       -v /var/run/docker.sock:/var/run/docker.sock \
-      --network gitlab_gitlab_net \
+      --network gitlab_net \
       gitlab/gitlab-runner:alpine
   when: runner_container.stdout == ""
   register: runner_created
@@ -116,7 +116,7 @@
       --executor "docker" \
       --docker-image "docker:24.0.7" \
       --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
-      --docker-network-mode "gitlab_gitlab_net" \
+      --docker-network-mode "gitlab_net" \
       --docker-privileged \
       --run-untagged="true" \
       --locked="false"
