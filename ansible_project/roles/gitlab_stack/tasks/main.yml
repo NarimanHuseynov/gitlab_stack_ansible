@@ -1,0 +1,185 @@
+---
+# ================================================================
+# roles/gitlab_stack/tasks/main.yml
+# Полный сценарий: установка GitLab, Runner, Root PAT, SSH-ключ
+# ================================================================
+
+# 1️⃣ Docker Compose GitLab
+- name: Ensure /root/devsecops/gitlab exists
+  file:
+    path: /root/devsecops/gitlab
+    state: directory
+    mode: "0755"
+
+- name: Copy GitLab docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /root/devsecops/gitlab/docker-compose.yml
+  register: gitlab_compose
+
+- name: Check if GitLab container exists
+  shell: docker ps -a --format '{{ "{{.Names}}" }}' | grep -w gitlab || true
+  register: gitlab_exists
+  changed_when: false
+
+- name: Bring up GitLab stack
+  shell: docker compose -f /root/devsecops/gitlab/docker-compose.yml up -d
+  args:
+    chdir: /root/devsecops/gitlab
+  when: gitlab_exists.stdout == "" or gitlab_compose.changed
+
+- name: Wait for GitLab web interface to respond
+  uri:
+    url: "http://10.22.255.224/users/sign_in"
+    method: GET
+    return_content: no
+    status_code: [200, 302, 401]
+  register: gitlab_status
+  retries: 30
+  delay: 10
+  until: gitlab_status.status in [200, 302, 401]
+
+- name: Wait for HTTP port 80
+  wait_for:
+    port: 80
+    delay: 20
+    timeout: 300
+
+# 2️⃣ Root password
+- name: Ensure root password is set only once
+  shell: |
+    docker exec gitlab gitlab-rails runner "
+      user = User.find_by_username('root')
+      if user.valid_password?('Nh12345678!!')
+        puts 'Root password already set.'
+      else
+        user.password = 'Nh12345678!!'
+        user.password_confirmation = 'Nh12345678!!'
+        user.save!
+        puts 'Root password updated.'
+      end
+    "
+  register: reset_result
+  changed_when: "'updated' in reset_result.stdout"
+
+# 3️⃣ Runner (idempotent)
+- name: Ensure runner config dir exists
+  file:
+    path: "/root/gitlab-runner-config"
+    state: directory
+    mode: "0755"
+
+- name: Check if GitLab Runner container exists
+  shell: docker ps -a --format '{{ "{{.Names}}" }}' | grep -w gitlab-runner || true
+  register: runner_container
+  changed_when: false
+
+- name: Create GitLab Runner container if missing
+  shell: |
+    docker run -d --name gitlab-runner --restart always \
+      -v /root/gitlab-runner-config:/etc/gitlab-runner \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      --network gitlab_gitlab_net \
+      gitlab/gitlab-runner:alpine
+  when: runner_container.stdout == ""
+  register: runner_created
+  changed_when: runner_container.stdout == ""
+  retries: 3
+  delay: 5
+  until: runner_created.rc == 0
+
+- name: Wait for gitlab-runner container to become healthy
+  shell: docker ps --filter "name=gitlab-runner" --filter "status=running" --format '{{ "{{.Names}}" }}'
+  register: runner_ready
+  retries: 10
+  delay: 5
+  until: runner_ready.stdout.strip() == "gitlab-runner"
+
+- name: Get GitLab runner registration token
+  shell: docker exec gitlab gitlab-rails runner "puts Gitlab::CurrentSettings.current_application_settings.runners_registration_token"
+  register: gitlab_runner_token
+  changed_when: false
+
+- name: Check if runner already registered (via config.toml)
+  shell: |
+    docker exec gitlab-runner bash -c "grep -q 'Global Shared Runner' /etc/gitlab-runner/config.toml && echo exists || echo missing"
+  register: runner_state
+  failed_when: false
+  changed_when: false
+
+- name: Register GitLab Runner (only if missing)
+  shell: |
+    docker exec gitlab-runner gitlab-runner register --non-interactive \
+      --url "http://10.22.255.224" \
+      --registration-token "{{ gitlab_runner_token.stdout | trim }}" \
+      --description "Global Shared Runner" \
+      --executor "docker" \
+      --docker-image "docker:24.0.7" \
+      --docker-volumes "/var/run/docker.sock:/var/run/docker.sock" \
+      --docker-network-mode "gitlab_gitlab_net" \
+      --docker-privileged \
+      --run-untagged="true" \
+      --locked="false"
+  when: runner_state.stdout == "missing"
+  register: runner_register
+  retries: 3
+  delay: 10
+  until: runner_register.rc == 0
+  changed_when: runner_state.stdout == "missing"
+- name: Print runner registration status
+  debug:
+    msg: >-
+      {{"✅ Runner already exists — skipping registration."
+        if runner_state.stdout == "exists"
+        else "✅ New Runner registered successfully."}}
+
+# 4️⃣ Root PAT
+- name: Ensure root PAT exists
+  shell: |
+    docker exec gitlab gitlab-rails runner "
+      token = PersonalAccessToken.find_by_token('root_access_token_123')
+      unless token
+        user = User.find_by_username('root')
+        new_token = user.personal_access_tokens.create!(
+          scopes: [:api, :read_user, :read_repository, :write_repository, :sudo],
+          name: 'root-token',
+          expires_at: 30.days.from_now
+        )
+        new_token.set_token('root_access_token_123')
+        new_token.save!
+        puts 'Created new PAT'
+      else
+        puts 'Token already exists.'
+      end
+    "
+  register: root_pat
+  changed_when: "'Created new' in root_pat.stdout"
+
+# 5️⃣ SSH key generation and registration in GitLab
+- name: Generate SSH key for GitLab access (if missing)
+  ansible.builtin.openssh_keypair:
+    path: /root/.ssh/id_rsa
+    type: rsa
+    size: 4096
+    comment: "gitlab@server"
+    force: no
+
+- name: Add SSH public key to GitLab root account
+  uri:
+    url: "http://10.22.255.224/api/v4/user/keys"
+    method: POST
+    headers:
+      PRIVATE-TOKEN: "root_access_token_123"
+    body_format: json
+    body:
+      title: "Server SSH Key"
+      key: "{{ lookup('file', '/root/.ssh/id_rsa.pub') }}"
+  register: ssh_key_add
+  changed_when: ssh_key_add.status == 201
+  failed_when: ssh_key_add.status not in [201, 409]
+
+- debug:
+    msg: |
+      ✅ SSH key successfully added to GitLab root account.
+      📂 Path: /root/.ssh/id_rsa
+      🔗 Can now clone repos via SSH without password.

@@ -1,0 +1,87 @@
+version: "3.8"
+
+name: gitlab_stack
+
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    restart: always
+    hostname: gitlab.local
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://10.22.255.224:80'
+        registry_external_url 'http://10.22.255.224:5050'
+
+        gitlab_rails['gitlab_shell_ssh_port'] = 2222
+
+        # === Allow local webhooks ===
+        gitlab_rails['gitlab_allow_local_requests_from_web_hooks_and_services'] = true
+        gitlab_rails['gitlab_allow_local_requests_from_hooks_and_services'] = true
+        gitlab_rails['allow_local_requests_from_system_hooks'] = true
+        gitlab_rails['allow_local_requests_from_admins'] = true
+
+        # === Container Registry (per project) ===
+        registry['enable'] = true
+        registry['registry_http_addr'] = "0.0.0.0:5050"
+        registry['registry_path'] = "/var/opt/gitlab/gitlab-rails/shared/registry"
+        registry['storage_delete_enabled'] = true
+        gitlab_rails['registry_enabled'] = true
+        gitlab_rails['registry_host'] = "10.22.255.224"
+        gitlab_rails['registry_port'] = "5050"
+        gitlab_rails['registry_api_url'] = "http://10.22.255.224:5050"
+        gitlab_rails['registry_key_path'] = "/var/opt/gitlab/gitlab-rails/etc/gitlab-registry.key"
+
+        # === Root password ===
+        gitlab_rails['initial_root_password'] = 'Nh12345678!!'
+        gitlab_rails['store_initial_root_password'] = false
+
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2222:22"
+      - "5050:5050"
+    networks:
+      - gitlab_net
+    volumes:
+      - ./config:/etc/gitlab
+      - ./logs:/var/log/gitlab
+      - ./data:/var/opt/gitlab
+
+  docker-dind:
+    image: docker:24-dind
+    container_name: docker-dind
+    privileged: true
+    restart: always
+    networks:
+      - gitlab_net
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    command:
+      - "--insecure-registry=10.22.255.224:5050"
+    volumes:
+      - dind-data:/var/lib/docker
+    ports:
+      - "2375:2375"
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: gitlab-runner
+    restart: always
+    networks:
+      - gitlab_net
+    depends_on:
+      - gitlab
+      - docker-dind
+    environment:
+      DOCKER_HOST: tcp://docker-dind:2375
+    volumes:
+      - ./gitlab-runner/config:/etc/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  gitlab_net:
+    driver: bridge
+
+volumes:
+  dind-data:

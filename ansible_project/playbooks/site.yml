@@ -1,0 +1,6 @@
+- hosts: ubuntu_node
+  become: yes
+  roles:
+    - setup_environment
+    - gitlab_stack
+    - defectdojo
