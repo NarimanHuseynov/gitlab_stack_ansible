@@ -1,3 +1,5 @@
+version: "3.8"
+
 name: gitlab_stack
 
 services:
@@ -19,7 +21,7 @@ services:
         gitlab_rails['allow_local_requests_from_system_hooks'] = true
         gitlab_rails['allow_local_requests_from_admins'] = true
 
-        # === Container Registry (per project) ===
+        # === Container Registry ===
         registry['enable'] = true
         registry['registry_http_addr'] = "0.0.0.0:5050"
         registry['registry_path'] = "/var/opt/gitlab/gitlab-rails/shared/registry"
@@ -51,17 +53,20 @@ services:
     container_name: docker-dind
     privileged: true
     restart: always
-    networks:
-      - gitlab_net
     environment:
       DOCKER_TLS_CERTDIR: ""
     command:
       - "--insecure-registry=10.22.255.224:5050"
+      - "--bip=172.18.0.1/16"
     volumes:
       - dind-data:/var/lib/docker
+    networks:
+      gitlab_net:
+        aliases:
+          - docker-dind
     ports:
       - "2375:2375"
-
+  
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
     container_name: gitlab-runner
