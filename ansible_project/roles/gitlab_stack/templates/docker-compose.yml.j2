@@ -48,25 +48,6 @@ services:
       - ./logs:/var/log/gitlab
       - ./data:/var/opt/gitlab
 
-  docker-dind:
-    image: docker:24-dind
-    container_name: docker-dind
-    privileged: true
-    restart: always
-    environment:
-      DOCKER_TLS_CERTDIR: ""
-    command:
-      - "--insecure-registry=10.22.255.224:5050"
-      - "--bip=172.18.0.1/16"
-    volumes:
-      - dind-data:/var/lib/docker
-    networks:
-      gitlab_net:
-        aliases:
-          - docker-dind
-    ports:
-      - "2375:2375"
-  
   gitlab-runner:
     image: gitlab/gitlab-runner:latest
     container_name: gitlab-runner
@@ -75,9 +56,8 @@ services:
       - gitlab_net
     depends_on:
       - gitlab
-      - docker-dind
     environment:
-      DOCKER_HOST: tcp://docker-dind:2375
+      DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
       - ./gitlab-runner/config:/etc/gitlab-runner
       - /var/run/docker.sock:/var/run/docker.sock
@@ -86,6 +66,3 @@ networks:
   gitlab_net:
     name: gitlab_net
     driver: bridge
-
-volumes:
-  dind-data:
