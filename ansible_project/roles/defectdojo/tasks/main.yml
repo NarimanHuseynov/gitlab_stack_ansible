@@ -1,0 +1,78 @@
+---
+# ================================================================
+# Role: defectdojo
+# Purpose: Install OWASP DefectDojo (Community Edition)
+# Network: gitlab_net (shared with GitLab stack)
+# ================================================================
+
+- name: Ensure DefectDojo directory exists
+  file:
+    path: /root/devsecops/defectdojo
+    state: directory
+    mode: '0755'
+
+- name: Clone DefectDojo repository
+  git:
+    repo: https://github.com/DefectDojo/django-DefectDojo.git
+    dest: /root/devsecops/defectdojo
+    version: master
+    force: no
+    update: yes
+
+- name: Ensure gitlab_net Docker network exists
+  shell: docker network inspect gitlab_net || docker network create gitlab_net
+  changed_when: false
+
+- name: Check Docker Compose compatibility
+  shell: ./docker/docker-compose-check.sh
+  args:
+    chdir: /root/devsecops/defectdojo
+  register: compose_check
+  ignore_errors: yes
+
+- debug:
+    msg: "✅ Docker Compose compatibility check completed."
+
+- name: Build DefectDojo images
+  shell: docker compose build
+  args:
+    chdir: /root/devsecops/defectdojo
+
+- name: Run DefectDojo containers
+  shell: docker compose up -d
+  args:
+    chdir: /root/devsecops/defectdojo
+
+- name: Connect all DefectDojo containers to gitlab_net
+  shell: |
+    for c in $(docker ps -q --filter "name=defectdojo"); do
+      docker network connect gitlab_net $c || true
+    done
+  changed_when: false
+
+- name: Wait for DefectDojo initializer to complete
+  shell: |
+    timeout 300 bash -c '
+      until docker compose logs initializer 2>/dev/null | grep -q "Admin password:"; do
+        echo "Waiting for DefectDojo initializer..."
+        sleep 10
+      done
+    '
+  args:
+    chdir: /root/devsecops/defectdojo
+  register: dojo_init
+  ignore_errors: yes
+
+- name: Get DefectDojo admin password
+  shell: docker compose logs initializer | grep "Admin password:"
+  args:
+    chdir: /root/devsecops/defectdojo
+  register: admin_pass
+  ignore_errors: yes
+
+- debug:
+    msg: |
+      ✅ DefectDojo deployed successfully!
+      🌐 URL: http://10.22.255.224:8080
+      👤 Admin credentials:
+      {{ admin_pass.stdout }}
