@@ -23,14 +23,21 @@ services:
 
         # === Container Registry ===
         registry['enable'] = true
-        registry['registry_http_addr'] = "0.0.0.0:5050"
+        # внутренний backend (реестр слушает только на localhost)
+        registry['registry_http_addr'] = "127.0.0.1:5000"
         registry['registry_path'] = "/var/opt/gitlab/gitlab-rails/shared/registry"
         registry['storage_delete_enabled'] = true
+
+        # настройки взаимодействия между rails и registry
         gitlab_rails['registry_enabled'] = true
         gitlab_rails['registry_host'] = "10.22.255.224"
         gitlab_rails['registry_port'] = "5050"
-        gitlab_rails['registry_api_url'] = "http://10.22.255.224:5050"
+        gitlab_rails['registry_api_url'] = "http://127.0.0.1:5000"
         gitlab_rails['registry_key_path'] = "/var/opt/gitlab/gitlab-rails/etc/gitlab-registry.key"
+
+        # NGINX публикует registry наружу на порт 5050
+        registry_nginx['listen_port'] = 5050
+        registry_nginx['enable'] = true
 
         # === Root password ===
         gitlab_rails['initial_root_password'] = 'Nh12345678!!'
@@ -52,10 +59,10 @@ services:
     image: gitlab/gitlab-runner:latest
     container_name: gitlab-runner
     restart: always
-    networks:
-      - gitlab_net
     depends_on:
       - gitlab
+    networks:
+      - gitlab_net
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
