@@ -23,6 +23,35 @@
   shell: docker network inspect gitlab_net || docker network create gitlab_net
   changed_when: false
 
+# ✅ создаём persistent volume для DefectDojo (медиа и база)
+- name: Create persistent Docker volumes for DefectDojo
+  shell: |
+    docker volume inspect defectdojo_data >/dev/null 2>&1 || docker volume create defectdojo_data
+    docker volume inspect defectdojo_db >/dev/null 2>&1 || docker volume create defectdojo_db
+  changed_when: false
+
+# ✅ обновляем docker-compose.override.yml, не трогая оригинальный compose
+- name: Create docker-compose.override.yml with volume bindings
+  copy:
+    dest: /root/devsecops/defectdojo/docker-compose.override.yml
+    content: |
+      version: "3.9"
+      services:
+        uwsgi:
+          volumes:
+            - defectdojo_data:/app/media
+        nginx:
+          volumes:
+            - defectdojo_data:/app/media
+        postgres:
+          volumes:
+            - defectdojo_db:/var/lib/postgresql/data
+      volumes:
+        defectdojo_data:
+          external: true
+        defectdojo_db:
+          external: true
+
 - name: Check Docker Compose compatibility
   shell: ./docker/docker-compose-check.sh
   args:
